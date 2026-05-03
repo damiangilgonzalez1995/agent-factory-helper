@@ -216,3 +216,26 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# ───────── Node / Vite / TypeScript (viewer/) ─────────
+node_modules/
+viewer/node_modules/
+viewer/dist/
+viewer/.vite/
+*.tsbuildinfo
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local Claude settings (personales — no compartidas)
+.claude/settings.local.json
+.superpowers/

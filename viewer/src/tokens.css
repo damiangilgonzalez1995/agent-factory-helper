@@ -1,0 +1,132 @@
+/* ============================================================
+   MULTI-AGENT STUDIO — DESIGN TOKENS
+   ============================================================ */
+
+:root {
+  /* ── Backgrounds ── */
+  --bg-0: #0a0d12;       /* canvas / deepest */
+  --bg-1: #111520;       /* app shell */
+  --bg-2: #171c2e;       /* panels, cards */
+  --bg-3: #1e2438;       /* elevated surfaces */
+  --bg-4: #252c42;       /* hover states */
+
+  /* ── Text ── */
+  --text-0: #e8ecf4;     /* primary */
+  --text-1: #8b93aa;     /* secondary */
+  --text-2: #4e566b;     /* disabled / muted */
+  --text-inv: #0a0d12;   /* on bright surfaces */
+
+  /* ── Borders ── */
+  --border-0: #1e2438;   /* subtle */
+  --border-1: #2a3250;   /* default */
+  --border-2: #3a4468;   /* emphasis */
+
+  /* ── Brand node colors ── */
+  --agent:      #6c8ef5;   /* blue-indigo */
+  --agent-glow: rgba(108,142,245,0.25);
+  --tool:       #f97316;   /* orange-500 — naranja vivo */
+  --tool-glow:  rgba(249,115,22,0.28);
+  --bridge:     #10d9a0;   /* emerald-teal (refined from #10b981 — more luminous on dark) */
+  --bridge-glow:rgba(16,217,160,0.22);
+  --datastore:  #c084fc;   /* violet */
+  --datastore-glow: rgba(192,132,252,0.2);
+  --api:        #22d3ee;   /* electric cyan */
+  --api-glow:   rgba(34,211,238,0.25);
+  --router:     #22d3ee;   /* router agent: cyan eléctrico para distinguir */
+  --router-glow: rgba(34,211,238,0.35);
+
+  /* ── Tool type colors: TODOS NARANJA (las types se diferencian por icono) ── */
+  --tool-mcp:    #f97316;  /* orange */
+  --tool-http:   #f97316;  /* orange */
+  --tool-sql:    #f97316;  /* orange */
+  --tool-custom: #f97316;  /* orange */
+
+  /* ── DataStore type accents ── */
+  --ds-postgres:  #6c8ef5;
+  --ds-redis:     #f87171;
+  --ds-vector_db: #a78bfa;
+  --ds-s3:        #f59e3a;
+  --ds-file:      #94a3b8;
+
+  /* ── Edge colors ── */
+  --edge-default:   #3a4468;
+  --edge-data:      #6c8ef5;
+  --edge-control:   #f59e3a;
+  --edge-bridge:    #10d9a0;
+
+  /* ── Semantic ── */
+  --success: #10d9a0;
+  --warning: #f59e3a;
+  --error:   #f87171;
+  --info:    #38bdf8;
+
+  /* ── Typography ── */
+  --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', 'Fira Code', 'Cascadia Code', monospace;
+
+  --text-xs:   11px;
+  --text-sm:   12px;
+  --text-base: 14px;
+  --text-md:   16px;
+  --text-lg:   18px;
+  --text-xl:   22px;
+  --text-2xl:  28px;
+
+  --weight-regular: 400;
+  --weight-medium:  500;
+  --weight-semi:    600;
+  --weight-bold:    700;
+
+  --lh-tight:  1.2;
+  --lh-snug:   1.35;
+  --lh-base:   1.5;
+  --lh-loose:  1.65;
+
+  /* ── Spacing ── */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+
+  /* ── Radius ── */
+  --r-sm:   4px;
+  --r-base: 6px;
+  --r-md:   8px;
+  --r-lg:   12px;
+  --r-xl:   16px;
+  --r-full: 9999px;
+
+  /* ── Shadows ── */
+  --shadow-sm:  0 1px 3px rgba(0,0,0,0.4);
+  --shadow-md:  0 4px 16px rgba(0,0,0,0.5);
+  --shadow-lg:  0 8px 32px rgba(0,0,0,0.6);
+  --shadow-glow-agent:     0 0 16px rgba(108,142,245,0.35);
+  --shadow-glow-bridge:    0 0 14px rgba(16,217,160,0.4);
+  --shadow-glow-tool:      0 0 14px rgba(245,158,58,0.3);
+  --shadow-glow-datastore: 0 0 14px rgba(192,132,252,0.3);
+
+  /* ── Motion tokens ── */
+  /* Easings */
+  --ease-out-quart:   cubic-bezier(0.25, 1, 0.5, 1);
+  --ease-out-back:    cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-in-quart:    cubic-bezier(0.5, 0, 0.75, 0);
+  --ease-inout-sine:  cubic-bezier(0.37, 0, 0.63, 1);
+  --ease-spring:      cubic-bezier(0.175, 0.885, 0.32, 1.275);
+
+  /* Durations */
+  --dur-fast:   120ms;
+  --dur-base:   220ms;
+  --dur-slow:   380ms;
+  --dur-xslow:  600ms;
+
+  /* Icon animation cycles */
+  --cycle-breathe:  3200ms;
+  --cycle-loop:     2400ms;
+  --cycle-orbit:    4000ms;
+  --cycle-pulse:    1800ms;
+  --cycle-flow:     2000ms;
+}

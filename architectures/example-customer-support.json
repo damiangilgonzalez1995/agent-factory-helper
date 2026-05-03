@@ -1,0 +1,796 @@
+{
+  "case": {
+    "slug": "example-customer-support",
+    "title": "Triage automático de tickets de soporte",
+    "description": "Sistema que recibe tickets de soporte por email o portal, los clasifica por categoría (técnico, facturación, comercial), busca contexto relevante en la base de conocimiento interna, y genera una respuesta borrador. Casos de baja confianza o categorías sensibles se escalan a un humano con contexto estructurado.",
+    "inputs": [
+      "ticket en JSON con subject, body, customer_id, channel",
+      "metadata del cliente (tier, idioma) cuando esté disponible"
+    ],
+    "outputs": [
+      "respuesta borrador en el idioma del cliente",
+      "clasificación con confianza",
+      "flag de escalado humano cuando confianza < 0.6"
+    ],
+    "constraints": [
+      "Latencia < 5s en P95",
+      "Coste por ticket < 0.05 USD",
+      "Sin PII en logs ni en contextos cruzados entre clientes",
+      "Compliance GDPR para datos de clientes europeos"
+    ],
+    "actors": [
+      "Agente humano de soporte (recibe escalados)",
+      "Cliente final (consume respuesta)"
+    ],
+    "volume": "~500 tickets/día, picos de 2x los lunes y tras releases",
+    "createdAt": "2026-04-27T10:00:00Z",
+    "complexity": {
+      "domain": 3,
+      "task": 3,
+      "context": 4,
+      "tools": 3,
+      "flow": 3,
+      "total": 16,
+      "verdict": "Multiagente ligero",
+      "recommendedPatterns": ["Router", "Reflection"],
+      "rationale": "3 dominios disjuntos (técnico, facturación, comercial) que requieren conocimiento distinto. El contexto crece con el historial del ticket. Side effect en envío de respuesta requiere control. Tareas individuales acotadas, no requieren razonamiento profundo."
+    }
+  },
+  "variants": {
+    "basic": {
+      "stateModel": "message_passing",
+      "patterns": ["Single Agent + Tools"],
+      "agents": [
+        {
+          "id": "support_agent",
+          "name": "Support Agent",
+          "role": "Recibe el ticket, clasifica, busca KB, genera respuesta borrador",
+          "model": "claude-sonnet-4-6",
+          "systemPromptSummary": "Asistente de soporte multidominio. Clasifica el ticket, busca contexto en KB si hace falta, redacta respuesta borrador. Si confianza baja, marca para escalado.",
+          "tools": ["kb_search", "send_draft_to_human"],
+          "executionMode": "react_loop",
+          "executionModeRationale": "Necesita iterar: clasificar, buscar en KB si hace falta, decidir si responde o escala. maxSteps: 3.",
+          "contextStrategy": "stateless",
+          "stateReads": ["ticket.payload"],
+          "stateWrites": ["ticket.response_draft", "ticket.classification"],
+          "position": { "x": 200, "y": 200 }
+        }
+      ],
+      "tools": [
+        {
+          "id": "kb_search",
+          "name": "KB Search",
+          "type": "mcp",
+          "description": "Busca top-5 snippets en la base de conocimiento interna por similitud semántica.",
+          "consumedBy": ["support_agent"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 600, "y": 100 }
+        },
+        {
+          "id": "send_draft_to_human",
+          "name": "Send Draft to Human",
+          "type": "custom",
+          "description": "Encola el borrador en la cola de revisión humana.",
+          "consumedBy": ["support_agent"],
+          "idempotent": false,
+          "sideEffect": "write",
+          "position": { "x": 600, "y": 300 }
+        }
+      ],
+      "bridges": [],
+      "dataStores": [],
+      "edges": [
+        {
+          "id": "e_basic_1",
+          "source": "support_agent",
+          "target": "kb_search",
+          "label": "query",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_basic_2",
+          "source": "support_agent",
+          "target": "send_draft_to_human",
+          "label": "draft",
+          "kind": "tool_call"
+        }
+      ],
+      "rationale": "Mínimo viable para PoC. Un único agente clasifica, busca y redacta. Sin Reflection, sin bridges, sin escalado automático sofisticado: si el agente duda, marca el draft para revisión humana. Riesgos asumidos: respuestas variables en calidad, sin segregación por dominio (un mismo modelo intenta cubrir técnico, facturación y comercial). Útil para validar el flujo end-to-end con <50 tickets/día."
+    },
+    "intermediate": {
+      "stateModel": "scoped_state",
+      "patterns": ["Router", "Reflection"],
+      "agents": [
+        {
+          "id": "intent_router",
+          "name": "Intent Router",
+          "role": "Clasifica el ticket en una de las 3 categorías y delega al especialista",
+          "model": "claude-haiku-4-5-20251001",
+          "systemPromptSummary": "Router barato y rápido. Solo clasifica en {technical, billing, commercial} y delega. No responde directamente.",
+          "tools": ["delegate_to_specialist"],
+          "executionMode": "tool_then_return",
+          "executionModeRationale": "Una sola tool, decisión basada en regla simple sobre la salida del LLM. No necesita razonar más después de clasificar.",
+          "contextStrategy": "stateless",
+          "stateReads": ["ticket.payload"],
+          "stateWrites": ["ticket.classification"],
+          "position": { "x": 100, "y": 250 }
+        },
+        {
+          "id": "specialist_responder",
+          "name": "Specialist Responder",
+          "role": "Compone respuesta para la categoría asignada usando KB y datos del cliente",
+          "model": "claude-sonnet-4-6",
+          "systemPromptSummary": "Especialista que recibe categoría + ticket y produce respuesta borrador con contexto de KB. Aplica self-critique antes de devolver.",
+          "tools": ["kb_search", "lookup_customer", "send_draft"],
+          "executionMode": "react_loop",
+          "executionModeRationale": "Necesita iterar: buscar KB, evaluar si encuentra info suficiente, refinar query si no. maxSteps: 4. Si tras 4 iteraciones no tiene confianza, escala.",
+          "contextStrategy": "windowed",
+          "stateReads": ["ticket.payload", "ticket.classification"],
+          "stateWrites": ["ticket.response_draft", "ticket.confidence"],
+          "position": { "x": 600, "y": 250 }
+        }
+      ],
+      "tools": [
+        {
+          "id": "delegate_to_specialist",
+          "name": "Delegate to Specialist",
+          "type": "custom",
+          "description": "Pasa el ticket clasificado al specialist_responder con la categoría.",
+          "consumedBy": ["intent_router"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 350, "y": 250 }
+        },
+        {
+          "id": "kb_search",
+          "name": "KB Search",
+          "type": "mcp",
+          "description": "Busca top-10 snippets en la base de conocimiento interna por similitud semántica.",
+          "consumedBy": ["specialist_responder"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 950, "y": 100 }
+        },
+        {
+          "id": "lookup_customer",
+          "name": "Lookup Customer",
+          "type": "http",
+          "description": "Recupera tier, idioma y resumen de actividad reciente del cliente.",
+          "consumedBy": ["specialist_responder"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 950, "y": 250 }
+        },
+        {
+          "id": "send_draft",
+          "name": "Send Draft",
+          "type": "custom",
+          "description": "Encola la respuesta borrador en la cola de revisión humana.",
+          "consumedBy": ["specialist_responder"],
+          "idempotent": false,
+          "sideEffect": "write",
+          "position": { "x": 950, "y": 400 }
+        }
+      ],
+      "bridges": [
+        {
+          "id": "kb_summarizer",
+          "name": "KB Result Summarizer",
+          "kind": "summarize",
+          "implementation": "code",
+          "description": "Toma top-10 resultados de KB Search y devuelve los 3 más relevantes con snippets recortados a 200 tokens cada uno.",
+          "inputSchema": "KBSearchResult[]",
+          "outputSchema": "SummarizedKBContext",
+          "position": { "x": 800, "y": 100 }
+        }
+      ],
+      "dataStores": [],
+      "edges": [
+        {
+          "id": "e_int_1",
+          "source": "intent_router",
+          "target": "delegate_to_specialist",
+          "label": "classification",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_int_2",
+          "source": "delegate_to_specialist",
+          "target": "specialist_responder",
+          "label": "ticket + category",
+          "kind": "delegation"
+        },
+        {
+          "id": "e_int_3",
+          "source": "specialist_responder",
+          "target": "kb_search",
+          "label": "query",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_int_4",
+          "source": "kb_search",
+          "target": "specialist_responder",
+          "label": "top-10 → summary",
+          "kind": "tool_call",
+          "via": "kb_summarizer"
+        },
+        {
+          "id": "e_int_5",
+          "source": "specialist_responder",
+          "target": "lookup_customer",
+          "label": "customer_id",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_int_6",
+          "source": "specialist_responder",
+          "target": "send_draft",
+          "label": "draft",
+          "kind": "tool_call"
+        }
+      ],
+      "rationale": "Sweet spot para producción inicial. Router barato (Haiku) clasifica y delega; Specialist (Sonnet) responde con Reflection implícito en el react_loop. Bridge `kb_summarizer` evita saturar el contexto del responder con resultados completos. scoped_state porque cada ticket es independiente. Coste estimado ~3× la básica, latencia +20%, calidad notablemente mejor por separación router/responder y contexto de KB filtrado. Riesgos asumidos: una sola pasada de redacción por categoría, sin Verifier explícito en outputs, sin caching."
+    },
+    "advanced": {
+      "stateModel": "external_store",
+      "patterns": [
+        "Orchestrator-Worker",
+        "Verifier",
+        "Reflection",
+        "Human-in-the-loop checkpoint",
+        "Memory agent"
+      ],
+      "agents": [
+        {
+          "id": "orchestrator",
+          "name": "Orchestrator",
+          "role": "Coordina el flujo: invoca classifier, decide rama, delega al especialista correcto, dispara verifier, decide envío o escalado",
+          "model": "claude-sonnet-4-6",
+          "systemPromptSummary": "Orquestador que coordina sub-agentes especializados. Decide flujos según resultado de cada paso. Aplica criterios de escalado humano explícitos.",
+          "tools": [
+            "delegate_to_classifier",
+            "delegate_to_technical",
+            "delegate_to_billing",
+            "delegate_to_commercial",
+            "delegate_to_verifier",
+            "escalate_to_human"
+          ],
+          "executionMode": "react_loop",
+          "executionModeRationale": "Necesita razonar sobre los resultados de classifier y verifier para decidir el siguiente paso. maxSteps: 6. Tool give_up siempre disponible.",
+          "contextStrategy": "windowed",
+          "stateReads": ["ticket.payload"],
+          "stateWrites": ["ticket.flow_state"],
+          "position": { "x": 100, "y": 350 }
+        },
+        {
+          "id": "classifier",
+          "name": "Classifier",
+          "role": "Clasifica el ticket en categoría con score de confianza",
+          "model": "claude-haiku-4-5-20251001",
+          "systemPromptSummary": "Clasificador rápido. Devuelve {category, confidence, reasoning} estructurado.",
+          "tools": [],
+          "executionMode": "one_shot",
+          "executionModeRationale": "Clasificación pura sin tools. Único turno LLM. Considera convertir en bridge llm_micro si la lógica se simplifica.",
+          "contextStrategy": "stateless",
+          "stateReads": ["ticket.payload"],
+          "stateWrites": ["ticket.classification"],
+          "position": { "x": 400, "y": 100 }
+        },
+        {
+          "id": "technical_responder",
+          "name": "Technical Responder",
+          "role": "Compone respuestas técnicas con KB técnico, logs y stack traces",
+          "model": "claude-opus-4-7",
+          "systemPromptSummary": "Especialista técnico. Lee KB técnico, correlaciona con logs si aplica, redacta respuesta con pasos de troubleshooting.",
+          "tools": ["kb_search_tech", "lookup_logs", "memory_recall"],
+          "executionMode": "react_loop",
+          "executionModeRationale": "Tareas técnicas requieren razonamiento iterativo: leer error, formular hipótesis, verificar, redactar. maxSteps: 5.",
+          "contextStrategy": "summarized",
+          "stateReads": ["ticket.payload", "ticket.classification", "customer.tier"],
+          "stateWrites": ["ticket.response_draft", "ticket.confidence"],
+          "position": { "x": 700, "y": 100 }
+        },
+        {
+          "id": "billing_responder",
+          "name": "Billing Responder",
+          "role": "Compone respuestas de facturación con datos del CRM y políticas",
+          "model": "claude-sonnet-4-6",
+          "systemPromptSummary": "Especialista de billing. Lee datos del CRM, aplica políticas de la KB de facturación, redacta respuesta.",
+          "tools": ["kb_search_billing", "lookup_invoices", "memory_recall"],
+          "executionMode": "react_loop",
+          "executionModeRationale": "Necesita correlar tickets, facturas y políticas. maxSteps: 4.",
+          "contextStrategy": "windowed",
+          "stateReads": ["ticket.payload", "ticket.classification", "customer.tier"],
+          "stateWrites": ["ticket.response_draft", "ticket.confidence"],
+          "position": { "x": 700, "y": 350 }
+        },
+        {
+          "id": "commercial_responder",
+          "name": "Commercial Responder",
+          "role": "Respuestas comerciales: upgrades, downgrades, retención",
+          "model": "claude-sonnet-4-6",
+          "systemPromptSummary": "Especialista comercial. Considera tier del cliente, oportunidades de upsell, scripts de retención.",
+          "tools": ["kb_search_commercial", "lookup_customer_full"],
+          "executionMode": "react_loop",
+          "executionModeRationale": "Decisiones contextuales sobre ofertas. maxSteps: 4.",
+          "contextStrategy": "windowed",
+          "stateReads": ["ticket.payload", "ticket.classification", "customer.tier"],
+          "stateWrites": ["ticket.response_draft", "ticket.confidence"],
+          "position": { "x": 700, "y": 600 }
+        },
+        {
+          "id": "verifier",
+          "name": "Response Verifier",
+          "role": "Valida que la respuesta borrador cumple política, tono e idioma",
+          "model": "claude-haiku-4-5-20251001",
+          "systemPromptSummary": "Verificador de respuestas. Devuelve {pass: bool, issues: string[], confidence: float}. No reescribe; solo valida.",
+          "tools": [],
+          "executionMode": "one_shot",
+          "executionModeRationale": "Validación estructurada en un solo turno. Considera convertir en bridge llm_micro o validador determinista para checks objetivos.",
+          "contextStrategy": "stateless",
+          "stateReads": ["ticket.response_draft", "ticket.classification"],
+          "stateWrites": ["ticket.verification"],
+          "position": { "x": 1100, "y": 350 }
+        },
+        {
+          "id": "memory_agent",
+          "name": "Memory Agent",
+          "role": "Persiste y consulta memoria a largo plazo del cliente (preferencias, casos previos)",
+          "model": "claude-haiku-4-5-20251001",
+          "systemPromptSummary": "Memoria del cliente. Lee y escribe en external_store. Devuelve hechos relevantes acotados por similitud.",
+          "tools": ["read_memory", "write_memory"],
+          "executionMode": "tool_then_return",
+          "executionModeRationale": "Sirve memoria; un solo turno LLM para decidir qué leer/escribir.",
+          "contextStrategy": "stateless",
+          "stateReads": ["customer.id"],
+          "stateWrites": ["customer.memory"],
+          "position": { "x": 400, "y": 600 }
+        }
+      ],
+      "tools": [
+        {
+          "id": "delegate_to_classifier",
+          "name": "Delegate → Classifier",
+          "type": "custom",
+          "description": "Invoca classifier con el ticket.",
+          "consumedBy": ["orchestrator"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 250, "y": 100 }
+        },
+        {
+          "id": "delegate_to_technical",
+          "name": "Delegate → Technical",
+          "type": "custom",
+          "description": "Invoca technical_responder.",
+          "consumedBy": ["orchestrator"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 250, "y": 200 }
+        },
+        {
+          "id": "delegate_to_billing",
+          "name": "Delegate → Billing",
+          "type": "custom",
+          "description": "Invoca billing_responder.",
+          "consumedBy": ["orchestrator"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 250, "y": 300 }
+        },
+        {
+          "id": "delegate_to_commercial",
+          "name": "Delegate → Commercial",
+          "type": "custom",
+          "description": "Invoca commercial_responder.",
+          "consumedBy": ["orchestrator"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 250, "y": 400 }
+        },
+        {
+          "id": "delegate_to_verifier",
+          "name": "Delegate → Verifier",
+          "type": "custom",
+          "description": "Invoca verifier sobre el draft.",
+          "consumedBy": ["orchestrator"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 250, "y": 500 }
+        },
+        {
+          "id": "escalate_to_human",
+          "name": "Escalate to Human",
+          "type": "custom",
+          "description": "Manda el ticket a la cola humana con contexto estructurado. Side effect irreversible: el ticket se reserva en la cola.",
+          "consumedBy": ["orchestrator"],
+          "idempotent": false,
+          "sideEffect": "irreversible",
+          "position": { "x": 250, "y": 700 }
+        },
+        {
+          "id": "kb_search_tech",
+          "name": "KB Search · Technical",
+          "type": "mcp",
+          "description": "KB técnico (manuales, runbooks, FAQ técnico).",
+          "consumedBy": ["technical_responder"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 1100, "y": 50 }
+        },
+        {
+          "id": "lookup_logs",
+          "name": "Lookup Logs",
+          "type": "http",
+          "description": "Recupera logs recientes del producto para el customer_id.",
+          "consumedBy": ["technical_responder"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 1100, "y": 150 }
+        },
+        {
+          "id": "kb_search_billing",
+          "name": "KB Search · Billing",
+          "type": "mcp",
+          "description": "KB de facturación (políticas, procedimientos, plantillas).",
+          "consumedBy": ["billing_responder"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 1100, "y": 300 }
+        },
+        {
+          "id": "lookup_invoices",
+          "name": "Lookup Invoices",
+          "type": "http",
+          "description": "Recupera últimas N facturas del cliente.",
+          "consumedBy": ["billing_responder"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 1100, "y": 400 }
+        },
+        {
+          "id": "kb_search_commercial",
+          "name": "KB Search · Commercial",
+          "type": "mcp",
+          "description": "KB comercial (planes, ofertas, scripts retención).",
+          "consumedBy": ["commercial_responder"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 1100, "y": 550 }
+        },
+        {
+          "id": "lookup_customer_full",
+          "name": "Lookup Customer Full",
+          "type": "http",
+          "description": "Datos completos del cliente, plan, uso reciente.",
+          "consumedBy": ["commercial_responder"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 1100, "y": 650 }
+        },
+        {
+          "id": "memory_recall",
+          "name": "Memory Recall",
+          "type": "custom",
+          "description": "Tool que invoca al memory_agent para recuperar memoria del cliente.",
+          "consumedBy": ["technical_responder", "billing_responder"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 550, "y": 600 }
+        },
+        {
+          "id": "read_memory",
+          "name": "Read Memory",
+          "type": "custom",
+          "description": "Lee memoria del cliente del external_store.",
+          "consumedBy": ["memory_agent"],
+          "idempotent": true,
+          "sideEffect": "read",
+          "position": { "x": 250, "y": 600 }
+        },
+        {
+          "id": "write_memory",
+          "name": "Write Memory",
+          "type": "custom",
+          "description": "Persiste hechos nuevos del cliente.",
+          "consumedBy": ["memory_agent"],
+          "idempotent": false,
+          "sideEffect": "write",
+          "position": { "x": 250, "y": 700 }
+        }
+      ],
+      "bridges": [
+        {
+          "id": "pii_filter",
+          "name": "PII Filter",
+          "kind": "filter",
+          "implementation": "code",
+          "description": "Elimina email, teléfono, dirección y nombre completo del payload del ticket antes de enviar al classifier o memoria.",
+          "inputSchema": "TicketPayload",
+          "outputSchema": "TicketPayloadRedacted",
+          "position": { "x": 250, "y": 50 }
+        },
+        {
+          "id": "kb_tech_summarizer",
+          "name": "KB Tech Summarizer",
+          "kind": "summarize",
+          "implementation": "code",
+          "description": "Top-3 snippets técnicos recortados a 250 tokens cada uno.",
+          "inputSchema": "KBSearchResult[]",
+          "outputSchema": "SummarizedKBContext",
+          "position": { "x": 950, "y": 50 }
+        },
+        {
+          "id": "kb_billing_summarizer",
+          "name": "KB Billing Summarizer",
+          "kind": "summarize",
+          "implementation": "code",
+          "description": "Top-3 políticas de billing relevantes en formato estructurado.",
+          "inputSchema": "KBSearchResult[]",
+          "outputSchema": "SummarizedBillingContext",
+          "position": { "x": 950, "y": 300 }
+        },
+        {
+          "id": "kb_commercial_summarizer",
+          "name": "KB Commercial Summarizer",
+          "kind": "summarize",
+          "implementation": "code",
+          "description": "Resumen de ofertas relevantes filtrado por tier del cliente.",
+          "inputSchema": "KBSearchResult[]",
+          "outputSchema": "SummarizedOffersContext",
+          "position": { "x": 950, "y": 550 }
+        },
+        {
+          "id": "verification_router",
+          "name": "Verification Router",
+          "kind": "route",
+          "implementation": "code",
+          "description": "Decide en función de verifier.pass + verifier.confidence: aprobar para envío, reescribir, o escalar a humano.",
+          "inputSchema": "VerificationResult",
+          "outputSchema": "RouteDecision",
+          "position": { "x": 1300, "y": 350 }
+        },
+        {
+          "id": "memory_pii_filter",
+          "name": "Memory PII Filter",
+          "kind": "filter",
+          "implementation": "code",
+          "description": "Antes de persistir en memoria del cliente, elimina campos sensibles que no deben quedar a largo plazo.",
+          "inputSchema": "MemoryEntry",
+          "outputSchema": "RedactedMemoryEntry",
+          "position": { "x": 250, "y": 800 }
+        }
+      ],
+      "dataStores": [
+        {
+          "id": "ticket_store",
+          "name": "Ticket Store",
+          "type": "postgres",
+          "position": { "x": 1500, "y": 100 }
+        },
+        {
+          "id": "customer_memory_store",
+          "name": "Customer Memory",
+          "type": "vector_db",
+          "position": { "x": 1500, "y": 600 }
+        },
+        {
+          "id": "human_queue",
+          "name": "Human Queue",
+          "type": "redis",
+          "position": { "x": 1500, "y": 350 }
+        }
+      ],
+      "edges": [
+        {
+          "id": "e_adv_1",
+          "source": "orchestrator",
+          "target": "delegate_to_classifier",
+          "label": "ticket",
+          "kind": "tool_call",
+          "via": "pii_filter"
+        },
+        {
+          "id": "e_adv_2",
+          "source": "delegate_to_classifier",
+          "target": "classifier",
+          "label": "redacted ticket",
+          "kind": "delegation"
+        },
+        {
+          "id": "e_adv_3",
+          "source": "orchestrator",
+          "target": "delegate_to_technical",
+          "label": "if technical",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_adv_4",
+          "source": "delegate_to_technical",
+          "target": "technical_responder",
+          "label": "ticket + category",
+          "kind": "delegation"
+        },
+        {
+          "id": "e_adv_5",
+          "source": "orchestrator",
+          "target": "delegate_to_billing",
+          "label": "if billing",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_adv_6",
+          "source": "delegate_to_billing",
+          "target": "billing_responder",
+          "label": "ticket + category",
+          "kind": "delegation"
+        },
+        {
+          "id": "e_adv_7",
+          "source": "orchestrator",
+          "target": "delegate_to_commercial",
+          "label": "if commercial",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_adv_8",
+          "source": "delegate_to_commercial",
+          "target": "commercial_responder",
+          "label": "ticket + category",
+          "kind": "delegation"
+        },
+        {
+          "id": "e_adv_9",
+          "source": "technical_responder",
+          "target": "kb_search_tech",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_adv_10",
+          "source": "kb_search_tech",
+          "target": "technical_responder",
+          "label": "summary",
+          "kind": "tool_call",
+          "via": "kb_tech_summarizer"
+        },
+        {
+          "id": "e_adv_11",
+          "source": "billing_responder",
+          "target": "kb_search_billing",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_adv_12",
+          "source": "kb_search_billing",
+          "target": "billing_responder",
+          "label": "summary",
+          "kind": "tool_call",
+          "via": "kb_billing_summarizer"
+        },
+        {
+          "id": "e_adv_13",
+          "source": "commercial_responder",
+          "target": "kb_search_commercial",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_adv_14",
+          "source": "kb_search_commercial",
+          "target": "commercial_responder",
+          "label": "summary",
+          "kind": "tool_call",
+          "via": "kb_commercial_summarizer"
+        },
+        {
+          "id": "e_adv_15",
+          "source": "orchestrator",
+          "target": "delegate_to_verifier",
+          "label": "draft",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_adv_16",
+          "source": "delegate_to_verifier",
+          "target": "verifier",
+          "kind": "delegation"
+        },
+        {
+          "id": "e_adv_17",
+          "source": "verifier",
+          "target": "orchestrator",
+          "label": "result",
+          "kind": "handoff",
+          "via": "verification_router"
+        },
+        {
+          "id": "e_adv_18",
+          "source": "orchestrator",
+          "target": "escalate_to_human",
+          "label": "if low confidence",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_adv_19",
+          "source": "escalate_to_human",
+          "target": "human_queue",
+          "kind": "data_write"
+        },
+        {
+          "id": "e_adv_20",
+          "source": "memory_agent",
+          "target": "read_memory",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_adv_21",
+          "source": "read_memory",
+          "target": "customer_memory_store",
+          "kind": "data_read"
+        },
+        {
+          "id": "e_adv_22",
+          "source": "memory_agent",
+          "target": "write_memory",
+          "label": "with PII filter",
+          "kind": "tool_call",
+          "via": "memory_pii_filter"
+        },
+        {
+          "id": "e_adv_23",
+          "source": "write_memory",
+          "target": "customer_memory_store",
+          "kind": "data_write"
+        },
+        {
+          "id": "e_adv_24",
+          "source": "technical_responder",
+          "target": "memory_recall",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_adv_25",
+          "source": "billing_responder",
+          "target": "memory_recall",
+          "kind": "tool_call"
+        },
+        {
+          "id": "e_adv_26",
+          "source": "memory_recall",
+          "target": "memory_agent",
+          "kind": "delegation"
+        },
+        {
+          "id": "e_adv_27",
+          "source": "orchestrator",
+          "target": "ticket_store",
+          "label": "persist flow_state",
+          "kind": "data_write"
+        }
+      ],
+      "rationale": "Para volumen >10K/día y calidad crítica. Orchestrator-Worker con 3 especialistas por dominio (modelos distintos según complejidad: Opus para técnico, Sonnet para billing/commercial, Haiku para classifier/verifier). Verifier estructurado antes de envío. Memory agent persistente en vector_db para contexto entre sesiones del mismo cliente. Bridges: pii_filter en entrada (compliance GDPR), summarizers por dominio, verification_router para decidir aprobar/rehacer/escalar. external_store para auditoría y replay. Coste estimado ~3× la intermedia (~0.04 USD/ticket aún por debajo del SLA), latencia +15% por el verifier. Justificable cuando: (a) volumen alto, (b) compliance auditable obligatorio, (c) memoria del cliente aporta valor medible (CSAT)."
+    }
+  },
+  "activeVariant": "intermediate",
+  "history": [
+    {
+      "timestamp": "2026-04-27T10:00:00Z",
+      "variant": "intermediate",
+      "summary": "Caso normalizado por case-intake (ejemplo).",
+      "snapshot": {}
+    },
+    {
+      "timestamp": "2026-04-27T10:05:00Z",
+      "variant": "intermediate",
+      "summary": "Evaluación de complejidad: total 16, veredicto Multiagente ligero. Patrones recomendados: Router + Reflection.",
+      "snapshot": {}
+    },
+    {
+      "timestamp": "2026-04-27T10:25:00Z",
+      "variant": "intermediate",
+      "summary": "Síntesis inicial de las 3 variantes generada por architecture-synthesizer.",
+      "snapshot": {}
+    }
+  ]
+}
